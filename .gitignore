@@ -148,7 +148,28 @@ vite.config.ts.timestamp-*
 
 # Python
 venv/
+.venv/
+env/
+ENV/
 __pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+.pdm-python
+pip-log.txt
+pip-delete-this-directory.txt
 
 # macOS
 .DS_Store
