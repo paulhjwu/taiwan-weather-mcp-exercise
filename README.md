@@ -23,6 +23,54 @@
 | `POST /` | JSON-RPC 2.0 | Legacy — Composer backward compatible |
 | `GET /` | HTTP | Server info |
 
+## Sequence Diagram
+
+`POST /mcp` — Streamable HTTP via the MCP SDK (primary path for Claude Desktop / Cursor):
+
+```mermaid
+sequenceDiagram
+    participant Client as MCP Client
+    participant Hono as Hono App (index.ts)
+    participant SDK as McpServer (mcp-server.ts)
+    participant Tool as Tool Handler (tools/*.ts)
+    participant CWA as CWA Client (client.ts)
+    participant API as CWA Open Data API
+
+    Client->>Hono: POST /mcp {tools/call, get_forecast_36hr}
+    Hono->>SDK: createMcpServer(env) + createMcpHandler(server)
+    SDK->>Tool: getForecast36hr(env, { city })
+    Tool->>CWA: fetchDataset(apiKey, F-C0032-001, params)
+    CWA->>API: GET /datastore/F-C0032-001?locationName=...
+    API-->>CWA: { success, records }
+    CWA-->>Tool: records
+    Tool-->>SDK: ToolResult { content, isError? }
+    SDK-->>Hono: JSON-RPC 2.0 result
+    Hono-->>Client: 200 OK (application/json or text/event-stream)
+```
+
+`POST /` — legacy JSON-RPC path (bypasses the SDK, dispatches straight to the tool handler map in `mcp-handler.ts`):
+
+```mermaid
+sequenceDiagram
+    participant Client as Legacy Client
+    participant Hono as Hono App (index.ts)
+    participant Handler as handleRpcRequest (mcp-handler.ts)
+    participant Tool as Tool Handler (tools/*.ts)
+    participant CWA as CWA Client (client.ts)
+    participant API as CWA Open Data API
+
+    Client->>Hono: POST / {jsonrpc: "2.0", method: "tools/call", ...}
+    Hono->>Handler: handleRpcRequest(env, body)
+    Handler->>Tool: TOOL_HANDLERS[name](env, arguments)
+    Tool->>CWA: fetchDataset(apiKey, datasetId, params)
+    CWA->>API: GET /datastore/{datasetId}?...
+    API-->>CWA: { success, records }
+    CWA-->>Tool: records
+    Tool-->>Handler: ToolResult
+    Handler-->>Hono: { jsonrpc: "2.0", id, result }
+    Hono-->>Client: 200 OK (application/json)
+```
+
 ## Quick Start
 
 ### Prerequisites
