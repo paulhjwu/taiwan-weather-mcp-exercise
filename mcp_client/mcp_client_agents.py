@@ -14,11 +14,15 @@ Usage:
     #   DEEPINFRA_API_KEY=...
     python mcp_client_agents.py "台北市明天會下雨嗎？需要帶傘嗎？"
 
+    # Also print everything sent to / received from the MCP server and LLM:
+    python mcp_client_agents.py --show-trace "台北市明天會下雨嗎？需要帶傘嗎？"
+
 Prereqs:
     pip install openai mcp python-dotenv
     taiwan-weather server running locally:
         cd servers/taiwan-weather && npm run dev
 """
+import argparse
 import asyncio
 import json
 import os
@@ -51,6 +55,15 @@ SYSTEM_PROMPT = (
 )
 
 
+def trace(enabled: bool, label: str, payload) -> None:
+    """Print a labelled payload (as JSON where possible) to stderr."""
+    if not enabled:
+        return
+    if not isinstance(payload, str):
+        payload = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    print(f"\n[trace] {label}\n{payload}", file=sys.stderr)
+
+
 def mcp_tools_to_openai(tools) -> list[dict]:
     return [
         {
@@ -58,22 +71,29 @@ def mcp_tools_to_openai(tools) -> list[dict]:
             "function": {
                 "name": t.name,
                 "description": t.description or "",
-                "parameters": t.input_schema,
+                "parameters": t.inputSchema,
             },
         }
         for t in tools
     ]
 
 
-async def run_query(query: str) -> None:
+async def run_query(query: str, show_trace: bool = False) -> None:
     client = OpenAI(base_url=DEEPINFRA_BASE_URL, api_key=DEEPINFRA_API_KEY)
 
-    # installed mcp's type stub declares a 3-tuple, but this version's
-    # implementation only yields (read_stream, write_stream)
-    async with streamable_http_client(MCP_SERVER_URL) as (read, write):  # type: ignore[misc]
+    # mcp versions differ: some yield (read, write), newer ones yield
+    # (read, write, get_session_id). Only the first two are needed.
+    async with streamable_http_client(MCP_SERVER_URL) as streams:
+        read, write = streams[0], streams[1]
         async with ClientSession(read, write) as session:
             await session.initialize()
+            trace(show_trace, "MCP -> server: tools/list", {})
             tools_result = await session.list_tools()
+            trace(
+                show_trace,
+                "MCP <- server: tools/list result",
+                tools_result.model_dump(mode="json", exclude_none=True),
+            )
             tools = mcp_tools_to_openai(tools_result.tools)
             print(f"[connected] {len(tools)} tools available", file=sys.stderr)
 
@@ -83,10 +103,20 @@ async def run_query(query: str) -> None:
             ]
 
             while True:
+                trace(
+                    show_trace,
+                    f"LLM request -> {DEEPINFRA_MODEL}",
+                    {"messages": messages, "tools": [t["function"]["name"] for t in tools]},
+                )
                 response = client.chat.completions.create(
                     model=DEEPINFRA_MODEL,
                     messages=messages,
                     tools=tools,
+                )
+                trace(
+                    show_trace,
+                    "LLM response <-",
+                    response.model_dump(mode="json", exclude_none=True),
                 )
                 message = response.choices[0].message
                 messages.append(message.model_dump(exclude_none=True))
@@ -103,9 +133,19 @@ async def run_query(query: str) -> None:
                         f"[tool_use] {tool_call.function.name}({args})",
                         file=sys.stderr,
                     )
+                    trace(
+                        show_trace,
+                        "MCP -> server: tools/call",
+                        {"name": tool_call.function.name, "arguments": args},
+                    )
                     result = await session.call_tool(tool_call.function.name, args)
                     content = "\n".join(
                         c.text for c in result.content if c.type == "text"
+                    )
+                    trace(
+                        show_trace,
+                        "MCP <- server: tools/call result",
+                        result.model_dump(mode="json", exclude_none=True),
                     )
                     messages.append(
                         {
@@ -117,8 +157,20 @@ async def run_query(query: str) -> None:
 
 
 def main() -> None:
-    query = sys.argv[1] if len(sys.argv) > 1 else "台北市明天會下雨嗎？需要帶傘嗎？"
-    asyncio.run(run_query(query))
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[2])
+    parser.add_argument(
+        "query",
+        nargs="?",
+        default="台北市明天會下雨嗎？需要帶傘嗎？",
+        help="question to ask (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--show-trace",
+        action="store_true",
+        help="print payloads sent to / received from the MCP server and LLM to stderr",
+    )
+    args = parser.parse_args()
+    asyncio.run(run_query(args.query, args.show_trace))
 
 
 if __name__ == "__main__":
